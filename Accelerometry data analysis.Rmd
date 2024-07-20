@@ -1,0 +1,509 @@
+---
+title: "Accelerometry data analysis to detect outdoor activities"
+author: "Devam Sanjay Sheth"
+date: "2024-04-06"
+output: pdf_document
+abstract: "This project focuses on analyzing and visualizing accelerometry data of 32 adults and identify the activity each individual carried out. Modern, 3-axial accelerometers were fitted around left ankle, right ankle, left hip and left wrist of each participant to collect acceleration of their bodies along three orthogonal axes. As data is huge and complex, there was a need to use dimension reduction algorithms to provide efficient and accurate interpretations. This project implements 3 different dimension reduction techniques: Principal Component Analysis (PCA), Exploratory Factor Analysis,and Diffusion Matrix. A comparative analysis is carried among them to highlight key differences among their analysis. Apart from that, Short time Fourier Transformation (STFT) is also applied to data to reduce the dimensionality of data through localized time frame."
+---
+
+# Data Description
+
+The dataset comprises of raw labelled accelerometer readings captured from 32 healthy individuals while they were walking outdoors, climbing stairs, and driving. The accelerometer data was simultaneously recorded at four body positions: the left wrist, left hip, left ankle, and right ankle, with a sampling rate of 100 Hz.
+
+The dataset incorporates labels indicating the specific activity performed (walking, descending stairs, ascending stairs, driving, clapping) at each time point during the data gathering process. Additionally, basic demographic details about the participants have been included. All data has been anonymized to protect individual privacy.
+
+This project includes raw accelerometry data files, a data files dictionary, and participant demographic information. All data are anonymized. Specifically, the project files include:
+
+1.  raw_accelerometry_data: a directory with 32 data files in CSV format. Each file corresponds to raw accelerometry data measurements of 1 study participant. File names follow the convention: "subj_id.csv". Each file contains 14 variables:
+    a.  activity: Type of activity (1=walking; 2=descending stairs; 3=ascending stairs; 4=driving; 77=clapping; 99=non-study activity)
+    b.  time_s: Time from device initiation (seconds [s])
+    c.  lw_x: Left wrist x-axis measurement
+    d.  lw_y: Left wrist y-axis measurement
+    e.  lw_z: Left wrist z-axis measurement
+    f.  lh_x: Left hip x-axis measurement
+    g.  lh_y: Left hip y-axis measurement
+    h.  lh_z: Left hip z-axis measurement
+    i.  la_x: Left ankle x-axis measurement
+    j.  la_y: Left ankle y-axis measurement
+    k.  la_z: Left ankle z-axis measurement
+    l.  ra_x: Right ankle x-axis measurement
+    m.  ra_y: Right ankle y-axis measurement
+    n.  ra_z: Right ankle z-axis measurement
+2.  raw_accelerometry_data_dict.csv: a CSV file containing the description of 14 variables that each file in the raw_accelerometry_data directory consists of.
+3.  participant_demog.csv: a CSV file with participants demographic information. The file contains 7 variables:
+    a.  subj_id: Participant ID (a character scalar). The value in this column can be matched with a file name (without ".csv" extension) of a file in raw_accelerometry_data directory.
+    b.  gender: Participant gender (a character scalar; one of: "male", "female").
+    c.  age: Participant age (an integer scalar).
+    d.  height_in: Participant height (an integer scalar; expressed in inches).
+    e.  weight_lbs: Participant weight (an integer scalar; expressed in pounds).
+    f.  race: Participant race (a character scalar; one of: "asian", "black", "caucasian").
+    g.  right_handed: Participant handedness (an integer scalar; 1 if right-handed, 0 otherwise).
+
+Importing Libraries:
+```{r}
+library('signal')
+library('gsignal')
+library('ggplot2')
+library('dplyr')
+library(dimRed)
+```
+
+First check Participant's Demographic data
+```{r}
+demographic_data <- read.csv('./labeled-raw-accelerometry-data/participant_demog.csv')
+head(demographic_data)
+```
+
+
+
+```{r}
+summary(demographic_data)
+```
+It can be observed that with respect to all participants,
+1. Age ranges from 23 years to 54 years old
+2. Height ranges from 58 inches to 76 inches
+3. Weight ranges from 100 lbs to 310 lbs
+On manual inspection of dataset, it was found that out of 32, only 1 person was not right-handed.
+
+Defining STFT algorithm function:
+```{r}
+calculate_stft <- function(sub_data){
+  result_df <- list()
+  for (act in activities) {
+    print(act)
+    filtered_data <- subset(sub_data, activity == act)
+    sample_data <- filtered_data[,c("lw_x","lw_y","lw_z","lh_x","lh_y","lh_z","la_x","la_y","la_z","ra_x","ra_y","ra_z")]
+    lw_mag <- sqrt(sample_data$lw_x^2 + sample_data$lw_y^2 + sample_data$lw_z^2)
+    lh_mag <- sqrt(sample_data$lh_x^2 + sample_data$lh_y^2 + sample_data$lh_z^2)
+    la_mag <- sqrt(sample_data$la_x^2 + sample_data$la_y^2 + sample_data$la_z^2)
+    ra_mag <- sqrt(sample_data$ra_x^2 + sample_data$ra_y^2 + sample_data$ra_z^2)
+    sample_data_mag <- data.frame(lw_mag,lh_mag,la_mag,ra_mag)
+    fs <- 80
+    window_size <- 16
+    overlap <- 0.5
+    print(dim(sample_data))
+    stft_result <- stft(data.matrix(sample_data), fs = fs, window = window_size, overlap = overlap)
+    temp_result = list()
+    temp_result$lw = as.data.frame(t(stft_result$s[,,1])) %>%
+      setNames(stft_result$f) %>%
+      `rownames<-`(stft_result$t)
+    temp_result$lh = as.data.frame(t(stft_result$s[,,2]))%>%
+      setNames(stft_result$f) %>%
+      `rownames<-`(stft_result$t)
+    temp_result$la = as.data.frame(t(stft_result$s[,,3]))%>%
+      setNames(stft_result$f) %>%
+      `rownames<-`(stft_result$t)
+    temp_result$ra = as.data.frame(t(stft_result$s[,,4]))%>%
+      setNames(stft_result$f) %>%
+      `rownames<-`(stft_result$t)
+    result_df[[act]] <- temp_result
+  }
+  return(result_df)
+}
+
+```
+
+
+Reading data for all the subject, applying STFT and saving them into files:
+```{r}
+print(demographic_data[,c('subj_id','gender')])
+activities <- c(1,2,3,4,77,99)
+activity_m <- list("1"="walking","2"="descending stairs", "3"="ascending stairs", "4"="driving", "77"="clapping", "99"="non-study activity")
+sub_data <- read.csv('./labeled-raw-accelerometry-data/raw_accelerometry_data/id37a54bbf.csv')
+stft_data <- calculate_stft(sub_data)
+```
+
+Summarizing Data for first subject, with subject id = idabd0c53c
+```{r}
+for (act in activities){
+  num_contours = 15
+  filled.contour(as.numeric(rownames(stft_data[[act]]$lw)),as.numeric(colnames(stft_data[[act]]$lw)), as.matrix(stft_data[[act]]$lw) , xlab = "Time (s)",
+               ylab = "Frequency (Hz)",main = sprintf("plot with of left wrist activity: %s", activity_m[toString(act)]), levels = pretty(as.matrix(stft_data[[act]]$lh), n = num_contours))
+  
+  filled.contour(as.numeric(rownames(stft_data[[act]]$lh)),as.numeric(colnames(stft_data[[act]]$lh)), as.matrix(stft_data[[act]]$lh) , xlab = "Time (s)",
+               ylab = "Frequency (Hz)",main = sprintf("plot with of left hip activity: %s", activity_m[toString(act)]), levels = pretty(as.matrix(stft_data[[act]]$lh), n = num_contours))
+  
+  filled.contour(as.numeric(rownames(stft_data[[act]]$la)),as.numeric(colnames(stft_data[[act]]$la)), as.matrix(stft_data[[act]]$la) , xlab = "Time (s)",
+               ylab = "Frequency (Hz)",main = sprintf("plot with of left ankle activity: %s", activity_m[toString(act)]), levels = pretty(as.matrix(stft_data[[act]]$lh), n = num_contours))
+  
+  filled.contour(as.numeric(rownames(stft_data[[act]]$ra)),as.numeric(colnames(stft_data[[act]]$ra)), as.matrix(stft_data[[act]]$ra) , xlab = "Time (s)",
+               ylab = "Frequency (Hz)",main = sprintf("plot with of right ankle activity: %s", activity_m[toString(act)]), levels = pretty(as.matrix(stft_data[[act]]$lh), n = num_contours))
+}
+```
+1=walking; 2=descending stairs; 3=ascending stairs; 4=driving; 77=clapping; 99=non-study activity
+
+Preparing combined data
+```{r}
+columnNames <- append(colnames(sub_data),c("gender","right_handed", "height", "age"))
+columnTypes <- append(sapply(sub_data, class),c("character","integer","integer", "integer"))
+columns <- setNames(object = vector("list", length(columnNames)),
+                      nm = columnNames)
+for (i in seq_along(columns)) {
+    columns[[i]] <- switch(columnTypes[i],
+                           "character" = character(0),
+                           "numeric" = numeric(0),
+                           "integer" = integer(0),
+                           "logical" = logical(0),
+                           "factor" = factor(),
+                           stop("Unsupported column type"))
+  }
+
+result_df = data.frame(columns)
+agg_data <- function(subject){
+  print(sprintf("./labeled-raw-accelerometry-data/raw_accelerometry_data/%s.csv",subject['subj_id']))
+  data <- read.csv(sprintf("./labeled-raw-accelerometry-data/raw_accelerometry_data/%s.csv",subject['subj_id']))
+  set.seed(123)
+  sampled_data <- data %>%
+    group_by(activity) %>%
+    sample_frac(0.2)
+  sampled_data$gender <- rep.int(subject['gender'],dim(sampled_data)[1])
+  sampled_data$age <- rep.int(subject['age'],dim(sampled_data)[1])
+  sampled_data$height <- rep.int(subject['height_in'],dim(sampled_data)[1])
+  sampled_data$right_handed <- rep.int(subject['right_handed'],dim(sampled_data)[1])
+  result_df <<- rbind(result_df,sampled_data)
+  print(sprintf("Aggregated data of %s",subject['subj_id']))
+}
+
+apply(demographic_data,1,agg_data)
+magnitude <- function(coords){
+  return(sqrt(coords[1]^2 + coords[2]^2 + coords[3]^2))
+}
+result_df$lw_mag <- apply(result_df[,c("lw_x","lw_y","lw_z")],1, magnitude)
+result_df$lh_mag <- apply(result_df[,c("lh_x","lh_y","lh_z")],1, magnitude)
+result_df$la_mag <- apply(result_df[,c("la_x","la_y","la_z")],1, magnitude)
+result_df$ra_mag <- apply(result_df[,c("ra_x","ra_y","ra_z")],1, magnitude)
+```
+
+Creating custom biplot to plot biplot of just variable loadings
+```{r}
+custom_biplot <- function(pca_result, act, title) {
+  loadings <- pca_result$rotation
+  # Create an empty plot with proper limits
+  plot(loadings[, 1], loadings[, 2], type = 'n', 
+       xlim = c(-1, 1) * 1.1, ylim = c(-1, 1) * 1.1,
+       xlab = paste("PC1 (", round(pca_result$sdev[1] ^ 2 / sum(pca_result$sdev ^ 2) * 100, 1), "%)", sep=""),
+       ylab = paste("PC2 (", round(pca_result$sdev[2] ^ 2 / sum(pca_result$sdev ^ 2) * 100, 1), "%)", sep=""),
+       main = title)
+  # Adding vectors
+  arrows(0, 0, loadings[, 1], loadings[, 2], col = 'red', length = 0.1)
+  # Adding labels
+  text(loadings[, 1], loadings[, 2], labels = rownames(loadings), pos = 3)
+}
+
+for(act in activities){
+  act_data <- filter(result_df,activity == act)
+  act_data <-act_data[,c("lw_x","lw_y","lw_z","lh_x","lh_y","lh_z","la_x","la_y","la_z","ra_x","ra_y","ra_z")]
+  pca <- prcomp(act_data, scale = T)
+  options(width = 60)
+  # print(summary(pca))
+  custom_biplot(pca, act, sprintf("PCA Biplot for activity: %s (Only Variable Loadings)", activity_m[toString(act)]))
+}
+
+for(act in activities){
+  act_data <- filter(result_df,activity == act)
+  act_data <-act_data[,c("lw_mag","lh_mag","la_mag","ra_mag")]
+  pca <- prcomp(act_data, scale = T)
+  options(width = 60)
+  # print(summary(pca))
+  custom_biplot(pca, act, sprintf("PCA Biplot for activity: %s (Only Variable Loadings)", activity_m[toString(act)]))
+}
+```
+COnsidering sample of the whole data for the analysis
+```{r}
+sample_data <-result_df[,c("activity","lw_x","lw_y","lw_z","lh_x","lh_y","lh_z","la_x","la_y","la_z","ra_x","ra_y","ra_z", "height", "age","right_handed", "gender", "time_s","lw_mag","la_mag","lh_mag","ra_mag")]%>% 
+  group_by(activity) %>%
+    sample_n(500)
+
+sample_data$activity <- as.character(sample_data$activity)
+sample_data$height <- as.character(sample_data$height)
+sample_data$age <- as.character(sample_data$age)
+dim(sample_data)
+gc()
+```
+
+Carrying out IsoMap of sample data
+```{r}
+for (act in activities){
+  act_data <- filter(sample_data,activity == as.character(act))
+  emb <- embed(act_data[,c("lw_x", "lw_y", "lw_z")], "Isomap", knn = 20, ndim = 2)
+  plot_data <- data.frame(Isomap1 = emb@data@data[,1], Isomap2 = emb@data@data[,2], activity = act_data$activity)
+  
+  # ggplot2 for plotting
+  emb_plot <- ggplot(plot_data, aes(x = Isomap1, y = Isomap2)) +
+    geom_point(alpha = 0.8, size = 3) +
+    theme_minimal() +
+    labs(title = sprintf("Isomap of left wrist while: %s",activity_m[toString(act)]), x = "Isomap 1", y = "Isomap 2")
+  show(emb_plot)
+}
+for (act in activities){
+  tryCatch({
+  act_data <- filter(sample_data,activity == as.character(act))
+  emb <- embed(act_data[,c("lh_x", "lh_y", "lh_z")], "Isomap", knn = 10, ndim = 2)
+  plot_data <- data.frame(Isomap1 = emb@data@data[,1], Isomap2 = emb@data@data[,2], activity = act_data$activity)
+  
+  # ggplot2 for plotting
+  emb_plot <- ggplot(plot_data, aes(x = Isomap1, y = Isomap2)) +
+    geom_point(alpha = 0.8, size = 3) +
+    theme_minimal() +
+    labs(title = sprintf("Isomap of left hip while: %s",activity_m[toString(act)]), x = "Isomap 1", y = "Isomap 2")
+  show(emb_plot)}
+  , error = function(e) {
+  # Handle errors
+  print("An error occurred:")
+  print(e)
+}
+  )
+}
+for (act in activities){
+  tryCatch({
+  act_data <- filter(sample_data,activity == as.character(act))
+  emb <- embed(act_data[,c("la_x", "la_y", "la_z")], "Isomap", knn = 150, ndim = 2)
+  plot_data <- data.frame(Isomap1 = emb@data@data[,1], Isomap2 = emb@data@data[,2], activity = act_data$activity)
+  
+  # ggplot2 for plotting
+  emb_plot <- ggplot(plot_data, aes(x = Isomap1, y = Isomap2)) +
+    geom_point(alpha = 0.8, size = 3) +
+    theme_minimal() +
+    labs(title = sprintf("Isomap of left ankle while: %s",activity_m[toString(act)]), x = "Isomap 1", y = "Isomap 2")
+  show(emb_plot)}
+  , error = function(e) {
+  # Handle errors
+  print("An error occurred:")
+  print(e)
+}
+  )
+}
+
+for (act in activities){
+  tryCatch({
+  act_data <- filter(sample_data,activity == as.character(act))
+  emb <- embed(act_data[,c("ra_x", "ra_y", "ra_z")], "Isomap", knn = 10, ndim = 2)
+  plot_data <- data.frame(Isomap1 = emb@data@data[,1], Isomap2 = emb@data@data[,2], activity = act_data$activity)
+  
+  # ggplot2 for plotting
+  emb_plot <- ggplot(plot_data, aes(x = Isomap1, y = Isomap2)) +
+    geom_point(alpha = 0.8, size = 3) +
+    theme_minimal() +
+    labs(title = sprintf("Isomap of right ankle while: %s",activity_m[toString(act)]), x = "Isomap 1", y = "Isomap 2")
+  show(emb_plot)}
+  , error = function(e) {
+  # Handle errors
+  print("An error occurred:")
+  print(e)
+}
+  )
+}
+
+emb <- embed(scale(sample_data[,c("lw_x","lw_y","lw_z","lh_x","lh_y","lh_z","la_x","la_y","la_z","ra_x","ra_y","ra_z")]), "Isomap", knn = 400, ndim = 2)
+plot_data <- data.frame(Isomap1 = emb@data@data[,1], Isomap2 = emb@data@data[,2], activity = sample_data$activity)
+
+# ggplot2 for plotting
+emb_plot <- ggplot(plot_data, aes(x = Isomap1, y = Isomap2, color = activity)) +
+  geom_point(alpha = 0.8, size = 3) +
+  theme_minimal() +
+  labs(title = sprintf("Isomap of full data"), x = "Isomap 1", y = "Isomap 2")
+show(emb_plot)
+
+```
+
+
+tSNE of the sample data
+```{r}
+embedding_data <- sample_data[,c("lw_x","lw_y","lw_z","lh_x","lh_y","lh_z","la_x","la_y","la_z","ra_x","ra_y","ra_z")]
+emb_tSNE <- embed(embedding_data, "tSNE", perplexity = 30)
+
+plot_data <- data.frame(Isomap1 = emb_tSNE@data@data[,1], Isomap2 = emb_tSNE@data@data[,2], activity = sample_data$activity)
+
+emb_plot <- ggplot(plot_data, aes(x = Isomap1, y = Isomap2, color = activity)) +
+  geom_point(alpha = 0.8, size = 3) +
+  theme_minimal() +
+  labs(title = sprintf("t_SNE of full data"), x = "Isomap 1", y = "Isomap 2")
+show(emb_plot)
+accelerators <- list(lw=c("lw_x","lw_y","lw_z"),lh=c("lh_x","lh_y","lh_z"),la=c("la_x","la_y","la_z"),ra=c("ra_x","ra_y","ra_z"))
+
+  for (acc in accelerators){
+    # act_data <- filter(sample_data,activity == as.character(act))
+    pc_data <- sample_data[,acc]
+    pca_gender <- prcomp(pc_data, scale. = T)
+    pca_95_idx <- which(cumsum(pca_gender$sdev^2) / sum(pca_gender$sdev^2) < .99)
+    pca_gender_df <- as.data.frame(pca_gender$x[, pca_95_idx]) |>
+      mutate(label = sample_data$gender)
+    
+    emb_tSNE <- embed(subset(pca_gender_df, select = -label) , "tSNE", perplexity =80)
+    
+    plot_data <- data.frame(tSNE1 = emb_tSNE@data@data[,1], tSNE2 = emb_tSNE@data@data[,2], activity = sample_data$activity)
+    # plot_data <- data.frame(tSNE1 = emb_tSNE@data@data[,1], tSNE2 = emb_tSNE@data@data[,2], age = sample_data$gender)
+    emb_plot <- ggplot(plot_data, aes(x = tSNE1, y = tSNE2, color = activity)) +
+      geom_point(alpha = 0.8, size = 3) +
+      theme_minimal() +
+      labs(title = sprintf("t_SNE with respect to %s",toString(acc)), x = "tSNE 1", y = "tSNE 2")
+    show(emb_plot)
+}
+```
+
+LDA of the data
+```{r}
+if (!require(MASS)) install.packages("MASS")
+if (!require(ggsci)) install.packages("ggsci")
+
+library(ggsci)
+# Load the MASS package
+library(MASS)
+
+acc_names <- names(accelerators)
+for(acc in acc_names){
+  embed_data <- sample_data[,append(accelerators[[acc]],"activity")]
+  lda_act <- lda(activity ~., embed_data)
+  # compute projections
+  projections <- as.vector(as.matrix(embed_data[, accelerators[[acc]]]) %*% lda_act$scaling) 
+  plot_dat <- data.frame( time_s = sample_data$time_s, a = projections, label = sample_data$activity)
+  lda_plot<- ggplot(plot_dat, aes(x = time_s, y = a, color = as.factor(label))) +
+    geom_point(alpha = .75, size = 2) +
+    theme_minimal() +
+    scale_color_d3(name = "activity", scale_name = "category10") +
+    ggtitle(sprintf("LDA on activities using accelerator at %s for activity: %s ",acc,activity_m[toString(act)])) +
+    ylab("Projection onto linear discriminant") +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank())
+  show(lda_plot)
+}
+```
+```{r}
+for(acc in acc_names){
+  embed_data <- sample_data[,append(accelerators[[acc]],"activity")]
+  lda_act <- lda(activity ~., embed_data)
+  # compute projections
+  projections <- as.matrix(embed_data[, accelerators[[acc]]]) %*% lda_act$scaling
+  plot_dat <- data.frame( a = projections[,1] , b = projections[,2], label = sample_data$activity)
+  lda_plot<- ggplot(plot_dat, aes(x = a, y = b, color = as.factor(label))) +
+    geom_point(alpha = .75, size = 2) +
+    theme_minimal() +
+    scale_color_d3(name = "activity", scale_name = "category10") +
+    ggtitle(sprintf("LDA on activities using accelerator at %s for activity: %s ",acc,activity_m[toString(act)])) +
+    ylab("Projection onto linear discriminant 1") +
+    xlab("Projection onto linear discriminant 2") +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank())
+  show(lda_plot)
+}
+```
+LDA over PCA with index over genders
+```{r}
+for(acc in acc_names){
+    embed_data <- sample_data
+    pc_data <- embed_data[,accelerators[[acc]]]
+    pca_gender <- prcomp(pc_data)
+    pca_95_idx <- which(cumsum(pca_gender$sdev^2) / sum(pca_gender$sdev^2) < 1)
+    pca_gender_df <- as.data.frame(pca_gender$x[, pca_95_idx]) |>
+      mutate(label = sample_data$gender)
+    
+    lda_gender <- lda(label ~., pca_gender_df)
+    lda_pred <- predict(lda_gender)
+    
+    # lda_data <- data.frame(lda_pred$x, activity = embed_data$activity)
+    # compute projections
+    projections <- (pca_gender$x[, pca_95_idx] %*% lda_gender$scaling)[,1]
+    plot_dat <- data.frame( index = 1:nrow(embed_data), a = projections, label = embed_data$gender)
+    lda_plot<- ggplot(plot_dat, aes(x = index, y = a, color = as.factor(label))) +
+      geom_point(alpha = .75, size = 2) +
+      theme_minimal() +
+      scale_color_d3(name = "gender", palette = "category20") +
+      ggtitle(sprintf("LDA on activities using PCs as features of accelerator:%s ",acc)) +
+      ylab("Projection onto linear discriminant") +
+      theme(panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank())
+    show(lda_plot)
+}
+
+```
+
+LDA over PCA with index
+```{r}
+for(acc in acc_names){
+    embed_data <- sample_data
+    pc_data <- embed_data[,accelerators[[acc]]]
+    pca_gender <- prcomp(pc_data)
+    pca_95_idx <- which(cumsum(pca_gender$sdev^2) / sum(pca_gender$sdev^2) < 1)
+    pca_gender_df <- as.data.frame(pca_gender$x[, pca_95_idx]) |>
+      mutate(label = sample_data$activity)
+    
+    lda_gender <- lda(label ~., pca_gender_df)
+    lda_pred <- predict(lda_gender)
+    
+    lda_data <- data.frame(lda_pred$x, activity = embed_data$activity)
+    # compute projections
+    projections <- (pca_gender$x[, pca_95_idx] %*% lda_gender$scaling)[,1]
+    plot_dat <- data.frame( index = 1:nrow(embed_data), a = projections, label = embed_data$activity)
+    lda_plot<- ggplot(plot_dat, aes(x = index, y = a, color = as.factor(label))) +
+      geom_point(alpha = .75, size = 2) +
+      theme_minimal() +
+      scale_color_d3(name = "activity", palette = "category20") +
+      ggtitle(sprintf("LDA on activities using PCs as features of accelerator:%s ",acc)) +
+      ylab("Projection onto linear discriminant") +
+      theme(panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank())
+    show(lda_plot)
+}
+
+```
+
+LDA over PCA with time
+```{r}
+for(acc in acc_names){
+    embed_data <- sample_data
+    pc_data <- embed_data[,accelerators[[acc]]]
+    pca_gender <- prcomp(pc_data)
+    pca_95_idx <- which(cumsum(pca_gender$sdev^2) / sum(pca_gender$sdev^2) < 1)
+    pca_gender_df <- as.data.frame(pca_gender$x[, pca_95_idx]) |>
+      mutate(label = sample_data$activity)
+    
+    lda_gender <- lda(label ~., pca_gender_df)
+    lda_pred <- predict(lda_gender)
+    
+    lda_data <- data.frame(lda_pred$x, activity = embed_data$activity)
+    # compute projections
+    projections <- (pca_gender$x[, pca_95_idx] %*% lda_gender$scaling)[,1]
+    plot_dat <- data.frame( time_s = sample_data$time_s, a = projections, label = embed_data$activity)
+    lda_plot<- ggplot(plot_dat, aes(x = time_s, y = a, color = as.factor(label))) +
+      geom_point(alpha = .75, size = 2) +
+      theme_minimal() +
+      scale_color_d3(name = "activity", palette = "category20") +
+      ggtitle(sprintf("LDA on activities using PCs as features of accelerator:%s ",acc)) +
+      ylab("Projection onto linear discriminant") +
+      theme(panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank())
+    show(lda_plot)
+}
+
+```
+
+LDA over PCA with 2 PCs
+```{r}
+for(acc in acc_names){
+    embed_data <- sample_data
+    pc_data <- embed_data[,accelerators[[acc]]]
+    pca_gender <- prcomp(pc_data)
+    pca_95_idx <- which(cumsum(pca_gender$sdev^2) / sum(pca_gender$sdev^2) < .95)
+    pca_gender_df <- as.data.frame(pca_gender$x[, pca_95_idx]) |>
+      mutate(label = sample_data$activity)
+    
+    lda_gender <- lda(label ~., pca_gender_df)
+    lda_pred <- predict(lda_gender)
+    
+    lda_data <- data.frame(lda_pred$x, activity = embed_data$activity)
+    # compute projections
+    projections <- pca_gender$x[, pca_95_idx] %*% lda_gender$scaling
+    plot_dat <- data.frame( a = projections[,1] , b = projections[,2], label = embed_data$activity)
+    lda_plot<- ggplot(plot_dat, aes(x = a, y = b, color = as.factor(label))) +
+      geom_point(alpha = .75, size = 2) +
+      theme_minimal() +
+      scale_color_d3(name = "activity", palette = "category20") +
+      ggtitle(sprintf("LDA on activities using PCs as features of accelerator:%s ",acc)) +
+      ylab("Projection onto linear discriminant 2") +
+      xlab("Projection onto linear discriminant 1") +
+      theme(panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank())
+    show(lda_plot)
+}
+
+```
